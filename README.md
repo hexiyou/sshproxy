@@ -32,3 +32,6 @@ Example5:
         3.sshproxy test  检测已有代理端口的可用性
 
 ```
+---
+注：默认连接SSH后创建的代理隧道类型为SOCKS类型，如果需要使用HTTP隧道，需要使用goproxy所为辅助工具将SOCKS隧道转为HTTP隧道
+[goproxy Github来源](https://github.com/ooclab/goproxy)
