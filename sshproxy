@@ -1,0 +1,272 @@
+#!/bin/bash
+SCRIPTPATH=$(realpath $0)
+#执行autossh，自动创建SSH动态端口代理隧道
+
+display_usage() {
+	echo -e "$SCRIPTPATH\n"
+    echo -e "\t执行autossh，自动创建SSH动态端口代理隧道."
+	echo -e "\t默认绑定端口：0.0.0.0:8989."
+	echo -e "\t参数1目的主机的为必选参数，其余为可选参数."
+    echo -e "\nUsage:\n\tsshproxy [*hostname] [local proxy port] [kill exists process] [use http proxy or not(mustbe: nohttp)]"
+	echo -e "Example1:\n\tsshproxy racknerd true"
+	echo -e "Example2:\n\tsshproxy racknerd nohttp"
+	echo -e "Example3:\n\tsshproxy racknerd 7171 true"
+	echo -e "Example4:\n\tsshproxy racknerd 7171 nohttp"
+	echo -e "Example5:\n\tsshproxy racknerd 7171 true nohttp"
+	echo -e "\n附加用法:\n"
+	echo -e "\t1.sshproxy kill  检测并杀死所有的代理进程"
+	echo -e "\t2.sshproxy list  列出当前活动的所有代理"
+	echo -e "\t3.sshproxy test  检测已有代理端口的可用性\n"
+}
+# if less than two arguments supplied, display usage
+if [  $# -lt 1 ]
+then
+    display_usage
+    exit 1
+fi
+
+# check whether user had supplied -h or --help . If yes display usage
+if [[ ( $* == "--help") ||  $* == "-h" ]]
+then
+    display_usage
+    exit 0
+fi
+
+do_KillProcess() {
+	#首先尝试查询和保存代理各个端口
+	local processPID=$(ps aux|grep 'ssh-for-proxy'|awk '{print $4}'|tr '\n' ' ')
+	if [ ! -z "$processPID" ];then
+		declare -a proxyPort ## 定义数组，存储找到的多个代理进程本地端口
+		for pid in $processPID;
+		do
+			local port=$(netstat -ano|grep $pid|grep 'LISTENING'|grep 0.0.0.0|awk '{print $2;exit}'|awk -F ':' '{print $NF}')
+			#echo "$port"
+			proxyPort=(${proxyPort[@]} $port)
+		done
+	fi
+	echo "kill Process..."
+	killall autossh &> /dev/null
+	[ $? -eq 0 ] && echo " >> Has SSH Process Killed!"
+	killall ssh-for-proxy &> /dev/null
+	killall goproxy-for-ssh &> /dev/null
+	## 关闭涉及各端口的TCP连接，以保万全
+	echo "kill Connections..."
+	for port in ${proxyPort[@]};
+	do
+		#echo "Close Port Connection $port"
+		gsudo `cygpath -w /v/bin/cports` /close '*' $port '*' '*'
+	done
+	if [ ${#proxyPort[@]} -gt 0 ]
+	then
+		echo " >> ${#proxyPort[@]} Connections Killed!"
+	fi
+	return
+}
+
+do_ListProxy() {
+	local psList=$(ps aux|grep 'ssh-for-proxy')
+	local pids=$(echo "$psList"|awk '{print $1}')
+	local winpids=$(echo "$psList"|awk '{print $4}')
+	declare -a RemoteAddrs
+	declare -a ListenAddrs
+	declare -a ProxyAddrs
+	declare -a HostAlias #查找 ~/.ssh/config以确定主机别名
+	for pid in $(echo "$winpids");
+	do
+		local remoteAddr=$(netstat -ano -P TCP|grep $pid|grep 'ESTABLISHED'|awk '{print $3;exit}') #仅打印一行即退出
+		[ -z "$remoteAddr" ] && remoteAddr="Unknown:Unknown\t"
+		RemoteAddrs=(${RemoteAddrs[@]} $remoteAddr)
+		local remoteIP=$(echo $remoteAddr|cut -d ':' -f 1)
+		local hostName=$(python3 /v/bin/sshfindip.py $remoteIP|sed -n '1p')
+		if [ ! -z "$hostName" ];then
+			local hostName=$(echo "$hostName"|tr -s ' '|tr ' ' ','|sed -r 's/^Host\,//i')
+		else
+			local hostName="*Unknown*"
+		fi
+		HostAlias=(${HostAlias[@]} "$hostName")
+		local listenAddr=$(netstat -ano -P TCP|grep $pid|grep 'LISTENING'|grep '0.0.0.0'|awk '{print $2;exit}') #仅打印一行即退出
+		[ -z "$listenAddr" ] && listenAddr="Unknown:Unknown\t"
+		ListenAddrs=(${ListenAddrs[@]} $listenAddr)
+		local proxyAddr="socks5://127.0.0.1:"$(echo $listenAddr|awk -F ':' '{print $NF}')
+		ProxyAddrs=(${ProxyAddrs[@]} $proxyAddr)
+	done
+	declare -a unixPids
+	declare -a winPids
+	local unixPids=($(echo "$pids"|tr '\n' ' '))
+	local winPids=($(echo "$winpids"|tr '\n' ' '))
+	local proxyIndex=0
+	local showType="listen"
+	[ ! -z "$2" ] && showType="proxy"
+	if [[ $showType == "listen" ]];then
+		echo -e "PID\tWINPID\tRemote Address\t\tLocal Address\tHostName\n"
+	else
+		echo -e "PID\tWINPID\tRemote Address\t\tProxy Address\t\tHostName\n"
+	fi
+	for proxyNum in ${RemoteAddrs[@]};
+	do
+		#本地信息显示方式：代理地址 OR 监听地址
+		#local showLocal=${ListenAddrs[$proxyIndex]} ##本地监听地址
+		#local showLocal=${ProxyAddrs[$proxyIndex]} ##Socks代理地址
+		if [[ $showType == "listen" ]];then
+			local showLocal=${ListenAddrs[$proxyIndex]}
+		else
+			local showLocal=${ProxyAddrs[$proxyIndex]}
+		fi
+		echo -e "${unixPids[$proxyIndex]}\t${winPids[$proxyIndex]}\t$proxyNum\t$showLocal\t${HostAlias[$proxyIndex]}"
+		let proxyIndex+=1
+	done
+}
+
+do_TestProxy() {
+	# 当前已适配开启多个Proxy进程的情况
+	local processPID=$(ps aux|grep 'ssh-for-proxy'|awk '{print $4}'|tr '\n' ' ')
+	if [ ! -z "$processPID" ];then
+		#local proxyPort=$(netstat -ano|grep $processPID|grep 'LISTENING'|grep 0.0.0.0|awk '{print $2;exit}'|awk -F ':' '{print $NF}')
+		#local proxyPort=$(netstat -ano|grep $processPID|grep 'LISTENING'|grep 0.0.0.0|awk '{print $2}')
+		declare -a proxyPort ## 定义数组，存储找到的多个代理进程本地端口
+		for pid in $processPID;
+		do
+			local port=$(netstat -ano|grep $pid|grep 'LISTENING'|grep 0.0.0.0|awk '{print $2;exit}'|awk -F ':' '{print $NF}')
+			#echo "$port"
+			proxyPort=(${proxyPort[@]} $port)
+		done
+	fi
+	#echo "${proxyPort[@]}" ##数组：存储找到的所有代理的端口
+	
+	if [ ! -z "$processPID" -a ! -z "$proxyPort" ];then
+		for dstport in ${proxyPort[@]};
+		do
+			echo "proxyPort：$dstport"
+			echo "Proxy Address：127.0.0.1:$dstport"
+			echo "Full Proxy Address：socks5://127.0.0.1:$dstport"
+			nc -w 2 -v 127.0.0.1 $dstport
+			curl --connect-timeout 3 -sS -x socks5://127.0.0.1:$dstport 'http://v.ynit.top/ipfull/'
+			echo -e "\n"
+		done
+		return 0
+	else
+		echo "proxyPort not Found!"
+	fi
+}
+
+do_GrepGatewayPorts() {
+	#查询服务器 sshd_config 配置文件中 GatewayPorts 是否打开
+	GatewayConf=$(/v/bin/ssh-for-proxy "$1" 'grep -i "GatewayPorts" /etc/ssh/sshd_config')
+	echo "$GatewayConf"
+	echo "$GatewayConf"|grep -i ' no' 1>/dev/null 2>&1
+	if [ $? -eq 0 ]
+	then
+		echo "服务器 SSHD配置之 GatewayPorts选项未开启，请配置为 yes!"
+	fi	
+}
+
+if [[ $* == "kill" ]]
+then
+    do_KillProcess $@
+    exit 0
+fi
+
+if [[ $* =~ ^list$ || $* =~ "list " ]]
+then
+    do_ListProxy $@
+    exit 0
+fi
+
+if [[ $* == "test" ]]
+then
+    do_TestProxy $@
+    exit 0
+fi
+
+proxyPort=8989
+targetHost=$1
+noHTTP=false
+
+if [ $# -ge 2 ] && [ ! -z "$2" ];then
+	#判断第二个参数是否为纯数字，如果是数字，则认定为自定义代理的本地端口
+	expr $2 "+" 10 &> /dev/null  
+	if [ $? -eq 0 ];then
+		proxyPort=$2
+		shift
+	fi
+fi
+
+#proxyProcess=$(netstat -ano -P TCP|grep ':'$proxyPort)
+proxyProcess=$(netstat -ano -P TCP|grep ':'$proxyPort|grep 'LISTENING')
+
+if [ $(echo -n "$proxyProcess"|wc -c) -gt 0 ];then
+	#echo "有进程..."
+	echo "$proxyProcess"
+	if [ ! -z "$2" ] && [[ "$2" == "true" ]];then
+		## 不询问用户，直接杀死已有的进程
+		do_KillProcess		
+	else
+		echo "已有代理进程存在，是否杀死进程?"
+		read -p "是否终止已有进程?选择否本脚本将退出后续操作。y/n(默认为n)：" killProcess
+		if [ -z "$killProcess" ];then
+			killProcess="no"
+		fi
+		if [[ "$killProcess" == "y" || "$killProcess" == "yes" ]];then
+			do_KillProcess
+		else
+			exit 0
+		fi
+	fi
+	:;
+else
+	#echo "无进程..."
+	:;
+fi
+
+# 如果指定了不询问即终止进程的参数，此处$*参数前移一位
+[ $# -ge 3 ] && shift 1
+
+# 是否需要启动HTTP代理，默认均启动socks转http，端口号为socks端口前面加1，$2设为“nohttp”则不启动。
+# 下面用tr统一转字符串为小写比较
+if [ ! -z "$2" ] && [[ $(tr "[:upper:]" "[:lower:]" <<<"$2") == "nohttp" ]];
+then
+	noHTTP=true
+fi
+
+#从5656端口开始到5700，找到一个未占用的端口作为autossh管理端口
+managePort=5656
+manageOK=false
+while [ !$manageOK -a $managePort -lt 5701 ];
+do 
+	#echo "循环中"
+	#nc -w 2 -v 127.0.0.1 $managePort &> /dev/null
+	netstat -ano -P TCP|grep 'LISTENING'|grep '127.0.0.1:'$managePort &> /dev/null
+	if [ $? -ne 0 ];then
+		manageOK=true
+		break
+	fi
+	#echo "查询下一个端口"
+	let managePort+=1
+done
+if [[ $manageOK == false ]];then
+	echo "未找到可用的管理端口，程序罢工退出"
+	exit 1
+fi
+echo "autossh使用管理端口：$managePort"
+
+goProxyPort="1"$proxyPort
+
+AUTOSSH_PATH=/v/bin/ssh-for-proxy autossh -M $managePort -C -N -f -D 0.0.0.0:$proxyPort $targetHost
+echo "Proxy Address：127.0.0.1:$proxyPort"
+echo "Full Proxy Address：socks5://127.0.0.1:$proxyPort"
+echo "sshproxy Execute Done..."
+sleep 1
+nc -w 2 -v 127.0.0.1 $proxyPort
+[ $? -ne 0 ] && do_GrepGatewayPorts $targetHost
+curl --connect-timeout 3 -sS -x socks5://127.0.0.1:$proxyPort 'http://v.ynit.top/ipfull/'
+if [[ $noHTTP == false ]]
+then
+	echo -e "\nNow goProxy convert SOCKS proxy to HTTP：0.0.0.0:$goProxyPort\t Use：127.0.0.1:$goProxyPort"
+	#以下为两种运行goproxy转换代理的方式，由bash接收进程信号会导致效率降低，建议直接cmd形式调用
+	# way 1: bash run
+	#/v/bin/goproxy-for-ssh http -l 0.0.0.0:$goProxyPort -b 127.0.0.1:$proxyPort &>/dev/null &
+	# way 2:cmd run
+	cmd /c start "GoProxy: HTTP Proxy for $targetHost" `cygpath -w /v/bin/goproxy-for-ssh` http -l 0.0.0.0:$goProxyPort -b 127.0.0.1:$proxyPort
+else
+	echo -e "\n"
+fi
