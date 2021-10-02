@@ -2,8 +2,10 @@
 便捷创建SSH隧道wrapper脚本，对ssh -L命令的上层封装，创建本地socks或http代理隧道
 
 ## 使用说明：
+请运行`sshproxy --help` 或 `sshproxy -h` 查看命令帮助及参数说明！
+
 ```
- sshproxy --help
+sshproxy --help
 /v/bin/sshproxy
 
         执行autossh，自动创建SSH动态端口代理隧道.
