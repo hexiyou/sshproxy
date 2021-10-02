@@ -34,4 +34,18 @@ Example5:
 ```
 ---
 注：默认连接SSH后创建的代理隧道类型为SOCKS类型，如果需要使用HTTP隧道，需要使用goproxy所为辅助工具将SOCKS隧道转为HTTP隧道
+
 [goproxy Github来源](https://github.com/ooclab/goproxy)
+
+## 操作截图
+![image](https://user-images.githubusercontent.com/1593944/135702969-1b67760b-b7eb-45cd-80ef-7229b6e67942.png)
+
+
+![image](https://user-images.githubusercontent.com/1593944/135702935-74bd08ab-cb3e-45d6-8c75-d3f693b14a3b.png)
+
+![image](https://user-images.githubusercontent.com/1593944/135702947-d6649d79-fddd-4a1b-8e0e-7a8dc8b1ad21.png)
+
+![image](https://user-images.githubusercontent.com/1593944/135702960-7ee67e98-0586-4b68-b0e5-510a8906da9a.png)
+
+
+
