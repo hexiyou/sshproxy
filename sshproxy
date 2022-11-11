@@ -2,6 +2,8 @@
 SCRIPTPATH=$(realpath $0)
 #执行autossh，自动创建SSH动态端口代理隧道
 
+SSHBIN=/v/bin/ssh-for-proxy #默认ssh可执行文件
+
 display_usage() {
 	echo -e "$SCRIPTPATH\n"
     echo -e "\t执行autossh，自动创建SSH动态端口代理隧道."
@@ -151,7 +153,7 @@ do_TestProxy() {
 
 do_GrepGatewayPorts() {
 	#查询服务器 sshd_config 配置文件中 GatewayPorts 是否打开
-	GatewayConf=$(/v/bin/ssh-for-proxy "$1" 'grep -i "GatewayPorts" /etc/ssh/sshd_config')
+	GatewayConf=$($SSHBIN "$1" 'grep -i "GatewayPorts" /etc/ssh/sshd_config')
 	echo "$GatewayConf"
 	echo "$GatewayConf"|grep -i ' no' 1>/dev/null 2>&1
 	if [ $? -eq 0 ]
@@ -181,6 +183,9 @@ fi
 proxyPort=8989
 targetHost=$1
 noHTTP=false
+
+[[ "${targetHost,,}" == "kunming" ]] && SSHBIN=/v/bin/ssh-for-kunming #特殊服务器单独使用独立的exe名称，方便进程管理
+[ ! -f "$SSHBIN" ] && cp /usr/bin/ssh $SSHBIN
 
 if [ $# -ge 2 ] && [ ! -z "$2" ];then
 	#判断第二个参数是否为纯数字，如果是数字，则认定为自定义代理的本地端口
@@ -251,7 +256,7 @@ echo "autossh使用管理端口：$managePort"
 
 goProxyPort="1"$proxyPort
 
-AUTOSSH_PATH=/v/bin/ssh-for-proxy autossh -M $managePort -C -N -f -D 0.0.0.0:$proxyPort $targetHost
+AUTOSSH_PATH=$SSHBIN autossh -M $managePort -C -N -f -D 0.0.0.0:$proxyPort $targetHost
 echo "Proxy Address：127.0.0.1:$proxyPort"
 echo "Full Proxy Address：socks5://127.0.0.1:$proxyPort"
 echo "sshproxy Execute Done..."
